@@ -2,6 +2,7 @@ package bazaar.news
 
 import bazaar.news.com.example.plugins.configureDatabases
 import bazaar.news.com.example.plugins.configureRouting
+import bazaar.news.com.example.plugins.configureCors
 import bazaar.news.com.example.plugins.configureSerialization
 import io.ktor.server.application.*
 
@@ -10,6 +11,7 @@ fun main(args: Array<String>) {
 }
 
 fun Application.module() {
+    configureCors()
     configureSerialization()
     configureDatabases()
     configureRouting()

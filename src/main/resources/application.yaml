@@ -3,7 +3,7 @@ ktor:
     modules:
       - bazaar.news.ApplicationKt.module
   deployment:
-    port: 8080
+    port: 8079
 postgres:
   url: "jdbc:postgresql://localhost:5432/postgres"
   user: postgres
