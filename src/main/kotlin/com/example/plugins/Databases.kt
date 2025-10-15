@@ -13,6 +13,9 @@ import org.jetbrains.exposed.sql.transactions.transaction
 import bazaar.news.com.example.models.Users
 import bazaar.news.com.example.models.Posts
 import bazaar.news.com.example.models.Comments
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+
+
 
 
 fun Application.configureDatabases() {
@@ -28,7 +31,20 @@ fun Application.configureDatabases() {
     )
 
     transaction {
-       SchemaUtils.create(Users,Posts,Comments)
+        SchemaUtils.create(Users, Posts, Comments)
+
+        // Initialize existing posts with x/y if they are 0
+        Posts.selectAll().forEachIndexed { index, row ->
+            val currentX = row[Posts.x]
+            val currentY = row[Posts.y]
+
+            if (currentX == 0.0 && currentY == 0.0) {
+                Posts.update({ Posts.id eq row[Posts.id] }) {
+                    it[x] = (index % 10) * 200.0
+                    it[y] = (index / 10) * 150.0
+                }
+            }
+        }
     }
 
     log.info("Connected to Postgres and confirmed that tables exist")

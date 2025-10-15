@@ -8,5 +8,10 @@ data class PostResponse(
     val title: String,
     val content: String,
     val authorId: Int,
-    val createdAt: String
+    val createdAt: String,
+    val x: Double,
+    val y: Double,
+    val traction: Int,
+    val color: String,
+    val radius: Double,
 )
