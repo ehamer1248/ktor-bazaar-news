@@ -6,20 +6,24 @@ import bazaar.news.com.example.models.CommentResponse
 import bazaar.news.com.example.models.Posts
 import bazaar.news.com.example.models.Users
 import bazaar.news.com.example.models.Comments
+import bazaar.news.com.example.models.Upvotes
+
 import io.ktor.http.*
 import io.ktor.server.application.*
-import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.plugins.cors.routing.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import io.ktor.serialization.kotlinx.json.*
-import kotlinx.serialization.json.Json
+
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.mindrot.jbcrypt.BCrypt
 import java.time.LocalDateTime
+
+@kotlinx.serialization.Serializable
+data class UpvoteResult(val count: Int, val youVoted: Boolean)
+
 
 // ───────────────────────────────────────────────────────────────────────────────
 // CORS (dev; tighten for prod)
@@ -32,6 +36,8 @@ fun Application.configureCors() {
         allowMethod(HttpMethod.Options)
         allowMethod(HttpMethod.Get)
         allowMethod(HttpMethod.Post)
+        // If you later add DELETE (unvote), also:
+        // allowMethod(HttpMethod.Delete)
     }
 }
 
@@ -99,7 +105,6 @@ fun Application.configureRouting() {
                         traction = row[Posts.traction],
                         color = row[Posts.color],
                         radius = row[Posts.radius]
-
                     )
                     call.respond(HttpStatusCode.OK, dto)
                 } catch (t: Throwable) {
@@ -121,11 +126,8 @@ fun Application.configureRouting() {
                     ?: return@post call.respondText("Missing username", status = HttpStatusCode.BadRequest)
 
                 val postId: Int? = transaction {
-
-                    val user = Users.selectAll().where {Users.username eq username}.singleOrNull()
-                    if (user == null) {
-                        return@transaction null
-                    }
+                    val user = Users.selectAll().where { Users.username eq username }.singleOrNull()
+                    if (user == null) return@transaction null
                     val authorId = user[Users.id]
                     Posts.insert {
                         it[Posts.title] = title
@@ -135,7 +137,11 @@ fun Application.configureRouting() {
                     } get Posts.id
                 }
 
-                call.respondText("Post created with id $postId", status = HttpStatusCode.Created)
+                if (postId == null) {
+                    call.respondText("User not found", status = HttpStatusCode.BadRequest)
+                } else {
+                    call.respondText("Post created with id $postId", status = HttpStatusCode.Created)
+                }
             }
 
             // Register (x-www-form-urlencoded)
@@ -190,6 +196,7 @@ fun Application.configureRouting() {
                 call.respondText("Login successful!")
             }
 
+            // ───────────────────────────────── Comments ───────────────────────────────────────
             get("/posts/{postId}/comments") {
                 val postIdParam = call.parameters["postId"]
                     ?: return@get call.respondText("Missing postId", status = HttpStatusCode.BadRequest)
@@ -234,15 +241,11 @@ fun Application.configureRouting() {
                 val commentId: Int? = transaction {
                     // Verify post exists
                     val postExists = Posts.selectAll().where { Posts.id eq postId }.count() > 0
-                    if (!postExists) {
-                        return@transaction null
-                    }
+                    if (!postExists) return@transaction null
 
                     // Look up user by username
                     val user = Users.selectAll().where { Users.username eq username }.singleOrNull()
-                    if (user == null) {
-                        return@transaction null
-                    }
+                    if (user == null) return@transaction null
                     val authorId = user[Users.id]
 
                     Comments.insert {
@@ -258,6 +261,90 @@ fun Application.configureRouting() {
                 } else {
                     call.respondText("Comment created with id $commentId", status = HttpStatusCode.Created)
                 }
+            }
+
+            // ───────────────────────────────── Upvotes ────────────────────────────────────────
+
+            // Count upvotes for a post (older-Exposed style)
+            get("/posts/{id}/upvotes") {
+                val postId = call.parameters["id"]?.toIntOrNull()
+                    ?: return@get call.respondText("Invalid id", status = HttpStatusCode.BadRequest)
+
+                val count = transaction {
+                    Upvotes
+                        .selectAll()
+                        .where { Upvotes.postId eq postId }
+                        .count()
+                }.toInt()
+
+                call.respond(HttpStatusCode.OK, mapOf("count" to count))
+            }
+
+            // Has this username upvoted this post? (older-Exposed style)
+            get("/posts/{id}/upvotes/me") {
+                val postId = call.parameters["id"]?.toIntOrNull()
+                    ?: return@get call.respondText("Invalid id", status = HttpStatusCode.BadRequest)
+                val username = call.request.queryParameters["username"]
+                    ?: return@get call.respondText("Missing username", status = HttpStatusCode.BadRequest)
+
+                val youVoted = transaction {
+                    val user = Users.selectAll().where { Users.username eq username }.singleOrNull()
+                        ?: return@transaction false
+                    val uid = user[Users.id]
+
+                    Upvotes
+                        .selectAll()
+                        .where { (Upvotes.postId eq postId) and (Upvotes.userId eq uid) }
+                        .limit(1)
+                        .any()
+                }
+
+                call.respond(HttpStatusCode.OK, mapOf("youVoted" to youVoted))
+            }
+
+            // Perform upvote (idempotent; older-Exposed compatible; JSON DTO response)
+            post("/posts/{id}/upvote") {
+                val postId = call.parameters["id"]?.toIntOrNull()
+                    ?: return@post call.respondText("Invalid id", status = HttpStatusCode.BadRequest)
+                val params = call.receiveParameters()
+                val username = params["username"]
+                    ?: return@post call.respondText("Missing username", status = HttpStatusCode.BadRequest)
+
+                val countOrNull = transaction {
+                    // Ensure post exists
+                    val postExists = Posts.selectAll().where { Posts.id eq postId }.limit(1).any()
+                    if (!postExists) return@transaction null
+
+                    // Resolve user
+                    val user = Users.selectAll().where { Users.username eq username }.singleOrNull()
+                        ?: return@transaction null
+                    val uid = user[Users.id]
+
+                    // Try insert; if already exists, ignore the error (composite PK prevents duplicates)
+                    // Works across Exposed versions without relying on insertIgnore
+                    try {
+                        Upvotes.insert {
+                            it[Upvotes.postId] = postId
+                            it[Upvotes.userId] = uid
+                            it[Upvotes.createdAt] = LocalDateTime.now()
+                        }
+                    } catch (_: Exception) {
+                        // Most likely a duplicate key / already upvoted → ignore
+                    }
+
+                    // Authoritative count after (potential) insert
+                    Upvotes.selectAll()
+                        .where { Upvotes.postId eq postId }
+                        .count()
+                        .toInt()
+                }
+
+                if (countOrNull == null) {
+                    return@post call.respond(HttpStatusCode.BadRequest, "Post or user not found")
+                }
+
+                // Always return JSON; client expects {count, youVoted:true}
+                call.respond(HttpStatusCode.OK, UpvoteResult(count = countOrNull, youVoted = true))
             }
         }
     }
