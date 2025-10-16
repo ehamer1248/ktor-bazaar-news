@@ -14,4 +14,5 @@ data class PostResponse(
     val traction: Int,
     val color: String,
     val radius: Double,
+    val authorUsername: String
 )

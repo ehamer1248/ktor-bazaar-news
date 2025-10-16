@@ -55,16 +55,45 @@ fun Application.configureRouting() {
 
             // All posts
             get("/posts") {
+
+                val sort = call.request.queryParameters["sort"] ?: "new"
+                println("Sort parameter received: '$sort'")
                 val posts: List<PostResponse> = transaction {
-                    Posts
-                        .selectAll()
-                        .orderBy(Posts.id, SortOrder.ASC)
-                        .map { row ->
+
+                    val sorted = when (sort) {
+                        "new" -> {
+                            (Posts innerJoin Users)
+                                .selectAll()
+                                .orderBy(Posts.createdAt to SortOrder.DESC)
+                        }
+                        "top" -> {
+                            val allPosts = (Posts innerJoin Users)
+                                .selectAll()
+                                .toList()
+
+                            allPosts.sortedByDescending { row ->
+                                transaction {
+                                    Upvotes.selectAll()
+                                        .where(Upvotes.postId eq row[Posts.id])
+                                        .count()
+                                }
+                            }
+                        }
+
+                        else -> {
+                            (Posts innerJoin Users)
+                                .selectAll()
+                                .orderBy(Posts.createdAt to SortOrder.DESC)
+                        }
+                    }
+
+                    sorted.map { row ->
                             PostResponse(
                                 id = row[Posts.id],
                                 title = row[Posts.title],
                                 content = row[Posts.content],
                                 authorId = row[Posts.authorId],
+                                authorUsername = row[Users.username],
                                 createdAt = row[Posts.createdAt].toString(),
                                 x = row[Posts.x],
                                 y = row[Posts.y],
@@ -87,8 +116,7 @@ fun Application.configureRouting() {
 
                 try {
                     val row = transaction {
-                        // Older-Exposed-friendly: selectAll().where { ... }.singleOrNull()
-                        Posts
+                        (Posts innerJoin Users)
                             .selectAll()
                             .where { Posts.id eq id }
                             .singleOrNull()
@@ -100,6 +128,7 @@ fun Application.configureRouting() {
                         content = row[Posts.content],
                         authorId = row[Posts.authorId],
                         createdAt = row[Posts.createdAt].toString(),
+                        authorUsername = row[Users.username],
                         x = row[Posts.x],
                         y = row[Posts.y],
                         traction = row[Posts.traction],
@@ -140,7 +169,7 @@ fun Application.configureRouting() {
                 if (postId == null) {
                     call.respondText("User not found", status = HttpStatusCode.BadRequest)
                 } else {
-                    call.respondText("Post created with id $postId", status = HttpStatusCode.Created)
+                    call.respondText("Post created!", status = HttpStatusCode.Created)
                 }
             }
 
@@ -171,7 +200,7 @@ fun Application.configureRouting() {
                     } get Users.id
                 }
 
-                call.respondText("User created with id $userId", status = HttpStatusCode.Created)
+                call.respondText("User created!", status = HttpStatusCode.Created)
             }
 
             // Login (x-www-form-urlencoded)
